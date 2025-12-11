@@ -74,7 +74,7 @@ auth_config = Auth0Config(
     secret=AUTH0_SECRET,
     app_base_url=APP_BASE_URL,
     audience=AUTH0_AUDIENCE,
-    callback_path="/callback", #TODO: Explore why can not go to /callback, changing it to /auth/callback works 
+    callback_path="/callback",
     connect_account_callback_path="/connect-account/callback",
     authorization_params={"scope": AUTH0_SCOPE}
 )
