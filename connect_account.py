@@ -67,8 +67,6 @@ AUTH0_CONNECTION_NAME = os.getenv("AUTH0_CONNECTION_NAME")
 
 AUTH0_BASE_URL = f"https://{AUTH0_DOMAIN}"
 MYACCOUNT_BASE_URL = os.getenv("MYACCOUNT_BASE_URL") or f"https://myaccount.{AUTH0_DOMAIN.split('.', 1)[-1]}"
-
-
 auth_config = Auth0Config(
     domain=AUTH0_DOMAIN,
     client_id=AUTH0_CLIENT_ID,
@@ -76,7 +74,7 @@ auth_config = Auth0Config(
     secret=AUTH0_SECRET,
     app_base_url=APP_BASE_URL,
     audience=AUTH0_AUDIENCE,
-    callback_path="/auth/callback", #TODO: Explore why can not go to /callback, changing it to /auth/callback works 
+    callback_path="/callback", #TODO: Explore why can not go to /callback, changing it to /auth/callback works 
     connect_account_callback_path="/connect-account/callback",
     authorization_params={"scope": AUTH0_SCOPE}
 )
@@ -157,7 +155,13 @@ async def login(request: Request):
 
 @app.get("/auth/callback")
 async def callback(request: Request):
+    print("I am in callback callback callback callback callback")
     response = Response()
+    if "connect_code" in request.query_params:
+        redirect_target = f"{APP_BASE_URL}/connect-account/callback?{request.url.query}"
+        outgoing = RedirectResponse(url=redirect_target, status_code=302)
+        _merge_set_cookie(response, outgoing)
+        return outgoing
     try:
         result = await auth_client.complete_login(
             str(request.url),
@@ -198,6 +202,9 @@ async def connect_account_start(request: Request):
     scope = request.query_params.get("scope") or CONNECTED_ACCOUNT_SCOPE
     scopes = scope.split()
     login_hint = request.query_params.get("login_hint")
+    if not login_hint:
+        user_info = session_state.get("user") or {}
+        login_hint = (user_info.get("email") or "").strip()
 
     connect_url = await auth_client.start_connect_account(
         connection=connection,
@@ -206,8 +213,8 @@ async def connect_account_start(request: Request):
         authorization_params={"login_hint": login_hint} if login_hint else None,
         store_options=_store_options(request, response),
     )
-    print("connect_urlconnect_urlconnect_urlconnect_urlconnect_url")
     outgoing = RedirectResponse(url=connect_url, status_code=302)
+
     _merge_set_cookie(response, outgoing)
     return outgoing
 
@@ -245,6 +252,7 @@ async def federated_tokens(request: Request):
 
     token_sets = session_state.get("token_sets") or []
     access_token = token_sets[0].get("access_token") if token_sets else None
+    print('acccesstoken',access_token)
     if not access_token:
         raise HTTPException(status_code=400, detail="missing_access_token")
 
@@ -255,6 +263,7 @@ async def federated_tokens(request: Request):
             token=access_token,
         )
     except requests.HTTPError as exc:
+        print('exc',exc)
         details = {}
         try:
             details = exc.response.json()
