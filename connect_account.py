@@ -70,7 +70,6 @@ AUTH0_AUTH_PARAMS = {
     "scope": AUTH0_SCOPE,
     "prompt": "consent",
     "access_type": "offline",
-    "audience": AUTH0_AUDIENCE
 }
 auth_config = Auth0Config(
     domain=AUTH0_DOMAIN,
