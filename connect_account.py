@@ -30,7 +30,6 @@ from auth0_fastapi.config import Auth0Config
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from dotenv import load_dotenv
-
 load_dotenv()
 
 from starlette.datastructures import MutableHeaders
@@ -58,7 +57,7 @@ AUTH0_SECRET = require_env("AUTH0_SECRET")
 
 APP_BASE_URL =  os.getenv("APP_BASE_URL", "http://127.0.0.1:5000").rstrip("/")
 AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE")
-AUTH0_SCOPE = "openid profile email offline_access"
+AUTH0_SCOPE = "openid profile email offline_access myaccount:read_connections"
 CONNECTED_ACCOUNT_SCOPE = os.getenv(
      "myaccount:manage_connections",
      "openid profile email offline_access"
@@ -67,6 +66,12 @@ AUTH0_CONNECTION_NAME = os.getenv("AUTH0_CONNECTION_NAME")
 
 AUTH0_BASE_URL = f"https://{AUTH0_DOMAIN}"
 MYACCOUNT_BASE_URL = os.getenv("MYACCOUNT_BASE_URL") or f"https://myaccount.{AUTH0_DOMAIN.split('.', 1)[-1]}"
+AUTH0_AUTH_PARAMS = {
+    "scope": AUTH0_SCOPE,
+    "prompt": "consent",
+    "access_type": "offline",
+    "audience": AUTH0_AUDIENCE
+}
 auth_config = Auth0Config(
     domain=AUTH0_DOMAIN,
     client_id=AUTH0_CLIENT_ID,
@@ -76,13 +81,15 @@ auth_config = Auth0Config(
     audience=AUTH0_AUDIENCE,
     callback_path="/callback",
     connect_account_callback_path="/connect-account/callback",
-    authorization_params={"scope": AUTH0_SCOPE}
+    authorization_params=AUTH0_AUTH_PARAMS
 )
 
 
 auth_client = AuthClient(auth_config)
  
 app = FastAPI(title="Auth0 Connected Accounts Demo")
+
+REFRESH_TOKEN_CACHE: Dict[str, str] = {}
 
 def _store_options(request: Request, response: Response) -> Dict[str, Any]:
     """Translate FastAPI request/response into the structure required by AuthClient."""
@@ -92,6 +99,12 @@ def _store_options(request: Request, response: Response) -> Dict[str, Any]:
 async def _get_session(request: Request, response: Response) -> Optional[Dict[str, Any]]:
     """Retrieve the current Auth0 session stored in cookies."""
     session_state = await auth_client.client.get_session(store_options=_store_options(request, response))
+    if session_state:
+        user = session_state.get("user") or {}
+        user_sub = user.get("sub")
+        cached_refresh = REFRESH_TOKEN_CACHE.get(user_sub or "")
+        if cached_refresh:
+            session_state.setdefault("refresh_token", cached_refresh)
     return session_state
 
 
@@ -125,9 +138,11 @@ async def index(request: Request):
         return outgoing
 
     profile = session_state.get("user") or {}
+    refresh_token = session_state.get("refresh_token") or ""
     payload = {
         "authenticated": True,
         "profile": profile,
+        "refresh_token_present": bool(refresh_token),
         "links": {
             "login": f"{APP_BASE_URL}/login",
             "logout": f"{APP_BASE_URL}/logout",
@@ -146,6 +161,7 @@ async def login(request: Request):
     response = Response()
     auth_url = await auth_client.start_login(
         app_state={"returnTo": f"{APP_BASE_URL}/"},
+        authorization_params=AUTH0_AUTH_PARAMS,
         store_options=_store_options(request, response),
     )
     outgoing = RedirectResponse(url=auth_url, status_code=302)
@@ -170,6 +186,32 @@ async def callback(request: Request):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"callback_failed: {exc}") from exc
 
+    state_data = result.get("state_data") or {}
+    refresh_token = state_data.get("refresh_token")
+    print('refresh_tokenrefresh_tokenrefresh_token',refresh_token)
+    if not refresh_token:
+        token_sets = state_data.get("token_sets") or []
+        for token_set in token_sets:
+            if isinstance(token_set, dict):
+                token_refresh = token_set.get("refresh_token")
+                if token_refresh:
+                    refresh_token = token_refresh
+                    break
+    user_info = state_data.get("user") or {}
+    user_sub = user_info.get("sub")
+    if refresh_token and user_sub:
+        REFRESH_TOKEN_CACHE[user_sub] = refresh_token
+        try:
+            updated_state = dict(state_data)
+            updated_state["refresh_token"] = refresh_token
+            await auth_client.client._state_store.set(  # type: ignore[attr-defined]
+                auth_client.client._state_identifier,  # type: ignore[attr-defined]
+                updated_state,
+                options=_store_options(request, response),
+            )
+        except AttributeError:
+            pass
+
     app_state = result.get("app_state") or {}
     return_to = app_state.get("returnTo") or f"{APP_BASE_URL}/"
     outgoing = RedirectResponse(url=return_to, status_code=302)
@@ -193,6 +235,7 @@ async def logout(request: Request):
 async def connect_account_start(request: Request):
     response = Response()
     session_state = await _get_session(request, response)
+    print('session_state',session_state)
     if not session_state:
         raise HTTPException(status_code=401, detail="not_authenticated")
 
@@ -205,7 +248,7 @@ async def connect_account_start(request: Request):
     if not login_hint:
         user_info = session_state.get("user") or {}
         login_hint = (user_info.get("email") or "").strip()
-
+    
     connect_url = await auth_client.start_connect_account(
         connection=connection,
         scopes=scopes,
@@ -245,6 +288,7 @@ async def connect_account_callback(request: Request):
 
 @app.get("/federated-tokens")
 async def federated_tokens(request: Request):
+    print('federated_tokensfederated_tokensfederated_tokensfederated_tokensfederated_tokens')
     response = Response()
     session_state = await _get_session(request, response)
     if not session_state:
@@ -252,15 +296,15 @@ async def federated_tokens(request: Request):
 
     token_sets = session_state.get("token_sets") or []
     access_token = token_sets[0].get("access_token") if token_sets else None
-    print('acccesstoken',access_token)
+    print('acccesstoken',access_token) 
     if not access_token:
         raise HTTPException(status_code=400, detail="missing_access_token")
 
     try:
         accounts = _user_request(
             "GET",
-            "/api/v2/my-account/connected-accounts",
-            token=access_token,
+            "/me/v1/connected-accounts/accounts",
+            token=access_token
         )
     except requests.HTTPError as exc:
         print('exc',exc)
@@ -269,6 +313,11 @@ async def federated_tokens(request: Request):
             details = exc.response.json()
         except Exception:
             details = {"status": exc.response.status_code, "text": exc.response.text}
+        token_audience = token_sets[0].get("aud") if token_sets else "missing"
+        token_scope = token_sets[0].get("scope") if token_sets else "missing"
+        print("connected-accounts 404; token audience:", token_audience)
+        print("connected-accounts 404; token scope:", token_scope)
+        print("response detail:", details)
         raise HTTPException(status_code=exc.response.status_code, detail=details) from exc
 
     connected_accounts = accounts.get("connected_accounts", []) if isinstance(accounts, dict) else accounts
