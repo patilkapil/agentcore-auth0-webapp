@@ -57,7 +57,7 @@ AUTH0_SECRET = require_env("AUTH0_SECRET")
 
 APP_BASE_URL =  os.getenv("APP_BASE_URL", "http://127.0.0.1:5000").rstrip("/")
 AUTH0_AUDIENCE = os.getenv("AUTH0_AUDIENCE")
-AUTH0_SCOPE = "openid profile email offline_access myaccount:read_connections"
+AUTH0_SCOPE = "openid profile email offline_access read:me:connected_accounts " 
 CONNECTED_ACCOUNT_SCOPE = os.getenv(
      "myaccount:manage_connections",
      "openid profile email offline_access"
@@ -65,9 +65,10 @@ CONNECTED_ACCOUNT_SCOPE = os.getenv(
 AUTH0_CONNECTION_NAME = os.getenv("AUTH0_CONNECTION_NAME")
 
 AUTH0_BASE_URL = f"https://{AUTH0_DOMAIN}"
-MYACCOUNT_BASE_URL = os.getenv("MYACCOUNT_BASE_URL") or f"https://myaccount.{AUTH0_DOMAIN.split('.', 1)[-1]}"
+MYACCOUNT_BASE_URL = "https://smalser5.eu.auth0.com"
 AUTH0_AUTH_PARAMS = {
     "scope": AUTH0_SCOPE,
+    "audience": AUTH0_AUDIENCE,
     "prompt": "consent",
     "access_type": "offline",
 }
@@ -288,6 +289,9 @@ async def connect_account_callback(request: Request):
 @app.get("/federated-tokens")
 async def federated_tokens(request: Request):
     print('federated_tokensfederated_tokensfederated_tokensfederated_tokensfederated_tokens')
+    FEDERATED_SCOPE = CONNECTED_ACCOUNT_SCOPE
+
+
     response = Response()
     session_state = await _get_session(request, response)
     if not session_state:
@@ -305,6 +309,7 @@ async def federated_tokens(request: Request):
             "/me/v1/connected-accounts/accounts",
             token=access_token
         )
+        print('accounts',accounts)
     except requests.HTTPError as exc:
         print('exc',exc)
         details = {}
@@ -319,8 +324,9 @@ async def federated_tokens(request: Request):
         print("response detail:", details)
         raise HTTPException(status_code=exc.response.status_code, detail=details) from exc
 
-    connected_accounts = accounts.get("connected_accounts", []) if isinstance(accounts, dict) else accounts
+    connected_accounts = accounts.get("accounts", []) if isinstance(accounts, dict) else accounts
     federated_tokens: list[Dict[str, Any]] = []
+    print('connected_accounts',connected_accounts)
 
     for account in connected_accounts:
         connection = account.get("connection") or account.get("provider")
@@ -331,6 +337,9 @@ async def federated_tokens(request: Request):
             federated_tokens.append({"error": "missing_connection", "details": account})
             continue
 
+        print('connection',connection)
+        print('login_hint',login_hint)
+        print('_store_options(request, response)',_store_options(request, response))
         try:
             token = await auth_client.client.get_access_token_for_connection(
                 {
