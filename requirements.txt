@@ -1,0 +1,9 @@
+fastapi==0.111.0
+Authlib==1.2.1
+python-dotenv==1.0.0
+requests==2.31.0
+auth0-python==4.7.1
+uvicorn[standard]==0.27.1
+Jinja2==3.1.4
+auth0-fastapi==1.0.0b5
+auth0-server-python==1.0.0b6
