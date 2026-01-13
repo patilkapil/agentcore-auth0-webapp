@@ -33,13 +33,13 @@ SESSION_TABLE_NAME = os.getenv("SESSION_TABLE_NAME")
 AUTH0_SECRET = os.getenv("AUTH0_SECRET", "")
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://127.0.0.1:5000").rstrip("/")
  
-AUTH0_SCOPE = "openid profile email offline_access read:me:connected_accounts " 
+AUTH0_SCOPE = "openid profile email offline_access okta.users.read read:me:connected_accounts " 
 AUTH0_SECRET = os.getenv("AUTH0_SECRET")
 
 
 CONNECTED_ACCOUNT_SCOPE = os.getenv(
      "myaccount:manage_connections",
-     "openid profile email offline_access"
+     "openid profile email offline_access okta.users.read"
 )
 
 AUTH0_BASE_URL = f"https://{AUTH0_DOMAIN}"
@@ -72,6 +72,7 @@ auth_config = Auth0Config(
     callback_path="/auth/callback",
     connect_account_callback_path="/connect-account/callback",
     authorization_params=AUTH0_AUTH_PARAMS,
+    scopes=AUTH0_SCOPE,
 )
 
 auth_client = AuthClient(auth_config)
@@ -175,7 +176,7 @@ async def fetch_federated_tokens(request: Request, access_token: Optional[str] =
         try:
             # Exchange the primary token for the target connection token
             token_payload = await auth_client.client.get_access_token_for_connection(
-                {"connection": conn_name, "login_hint": user_id},
+                {"connection": conn_name, "login_hint": user_id,"scope":AUTH0_SCOPE},
                 store_options=_store_options(request, state_response),
             )
             federated_tokens.append({"connection": conn_name, "token": token_payload})
@@ -330,23 +331,12 @@ async def login(request: Request):
 @app.get("/auth/callback")
 async def callback(request: Request):
     response = Response()
-    
-    # Check if this is a response from a 'connect account' request
+    # Check if this is a secondary redirect from the Connect Account flow
     if "connect_code" in request.query_params:
-        try:
-            # Complete the connection flow
-            complete_response = await auth_client.complete_connect_account(
-                str(request.url),
-                store_options=_store_options(request, response),
-            )
-            request.session["connected_account_status"] = True
-            logging.info("Account connected successfully via callback intercept")
-        except Exception as exc:
-            logging.exception("Failed to complete account connection: %s", exc)
-            
-        return RedirectResponse(url="/chat", status_code=302)
-
-    # Standard Login Flow
+        target = f"{APP_BASE_URL}/connect-account/callback?{request.url.query}"
+        outgoing = RedirectResponse(url=target, status_code=302)
+        _merge_set_cookie(response, outgoing)
+        return outgoing
     try:
         result = await auth_client.complete_login(
             str(request.url),
@@ -360,7 +350,7 @@ async def callback(request: Request):
     token_sets = state_data.get("token_sets") or []
     primary_token = token_sets[0].get("access_token") if token_sets else None
     
-    # Store essential data in session
+    # Store essential data in session immediately
     userinfo = state_data.get("user") or {}
     request.session["profile"] = {
         "user_id": userinfo.get("sub"),
@@ -370,59 +360,12 @@ async def callback(request: Request):
     request.session["access_token"] = primary_token
     request.session["session_id"] = str(uuid.uuid4())
 
-    # Immediately attempt to fetch federated tokens for existing links
-    tokens_payload, token_resp = await fetch_federated_tokens(request, access_token=primary_token)
-    
-    # Extract string values for DynamoDB
-    fed_token_str = None
-    if tokens_payload.get("federated_tokens"):
-        fed_token_str = json.dumps(tokens_payload["federated_tokens"])
-
-    # Persist to DynamoDB
-    store_session_data(
-        session_id=request.session["session_id"],
-        refresh_token=state_data.get("refresh_token"),
-        federated_token=fed_token_str,
-        connection_name=AUTH0_CONNECTION_NAME,
-        user_data=request.session["profile"],
-        access_token=primary_token,
-        connected_accounts=tokens_payload.get("connected_accounts")
-    )
-
-    outgoing = RedirectResponse(url="/chat", status_code=302)
+    # PREPARE REDIRECT: Go to Connect Flow instead of Chat
+    outgoing = RedirectResponse(url="/connect-account/start", status_code=302)
     _merge_set_cookie(response, outgoing)
     return outgoing
 
 
-@app.get("/")
-async def index(request: Request):
-    response = Response()
-    session_state = await _get_session(request, response)
-    if not session_state:
-        payload = {
-            "authenticated": False,
-            "login": f"{APP_BASE_URL}/login",
-        }
-        outgoing = JSONResponse(payload)
-        _merge_set_cookie(response, outgoing)
-        return outgoing
-
-    profile = session_state.get("user") or {}
-    refresh_token = session_state.get("refresh_token") or ""
-    payload = {
-        "authenticated": True,
-        "profile": profile,
-        "refresh_token_present": bool(refresh_token),
-        "links": {
-            "login": f"{APP_BASE_URL}/login",
-            "logout": f"{APP_BASE_URL}/logout",
-            "connect_start": f"{APP_BASE_URL}/connect-account/start",
-            "connect_callback": f"{APP_BASE_URL}/connect-account/callback",
-        },
-    }
-    outgoing = JSONResponse(payload)
-    _merge_set_cookie(response, outgoing)
-    return outgoing
 
 
 @app.get("/login")
@@ -458,42 +401,17 @@ async def logout(request: Request):
 @app.get("/connect-account/start")
 @requires_auth
 async def connect_account_start(request: Request):
-    print('in connect_account_start connect_account_start connect_account_start')
     temp_response = Response()
-    session_state = await _fetch_auth0_session(request, temp_response)
-    if not session_state:
-        failure = RedirectResponse(url="/login", status_code=302)
-        _merge_set_cookie(temp_response, failure)
-        return failure
-
-    connection = request.query_params.get("connection") or AUTH0_CONNECTION_NAME
-    print('connection in connect_account_start',connection)
-    if not connection:
-        messages = list(request.session.get("chat_messages", []))
-        messages.append(
-            {
-                "sender": "system",
-                "message": "Connected account flow missing connection identifier.",
-            }
-        )
-        request.session["chat_messages"] = messages
-        failure = RedirectResponse(url="/chat", status_code=302)
-        _merge_set_cookie(temp_response, failure)
-        return failure
-
-    scope = request.query_params.get("scope") or CONNECTED_ACCOUNT_SCOPE
-    print('scope in connect_account_start',scope)
-    scopes = scope.split()
-    login_hint = request.query_params.get("login_hint")
-    print('login_hint in connect_account_start',login_hint)
-    if not login_hint:
-        user_info = session_state.get("user") or {}
-        login_hint = (user_info.get("email") or "").strip()
     
-    store_options=_store_options(request, temp_response),
-    
+    # Get profile from session (populated in /auth/callback)
+    profile = request.session.get("profile", {})
+    login_hint = profile.get("email")
+
+    connection = AUTH0_CONNECTION_NAME
+    scopes = CONNECTED_ACCOUNT_SCOPE.split()
 
     try:
+        # This triggers the Auth0 Account Linking flow
         connect_url = await auth_client.start_connect_account(
             connection=connection,
             scopes=scopes,
@@ -501,27 +419,13 @@ async def connect_account_start(request: Request):
             authorization_params={"login_hint": login_hint} if login_hint else None,
             store_options=_store_options(request, temp_response),
         )
-        print('connect_url in connect_account_start',connect_url)
     except Exception as exc:
-        print('exc in connect_account_start',exc)
-        # noqa: BLE001
-        logging.exception("Failed to start connected account flow: %s", exc)
-        request.session["connected_account_status"] = False
-        messages = list(request.session.get("chat_messages", []))
-        messages.append(
-            {
-                "sender": "system",
-                "message": "Connected account flow failed to start. Please retry.",
-            }
-        )
-        request.session["chat_messages"] = messages
-        failure = RedirectResponse(url="/chat", status_code=302)
-        _merge_set_cookie(temp_response, failure)
-        return failure
+        logging.exception("Automatic connect start failed: %s", exc)
+        return RedirectResponse(url="/chat", status_code=302)
 
     outgoing = RedirectResponse(url=connect_url, status_code=302)
+    print('outgoing',outgoing)
     _merge_set_cookie(temp_response, outgoing)
-    print('outgoing in connect_account_start',outgoing)
     return outgoing
 
 
@@ -529,47 +433,41 @@ async def connect_account_start(request: Request):
 @requires_auth
 async def connect_account_callback(request: Request):
     temp_response = Response()
-    session_state = await _fetch_auth0_session(request, temp_response)
-    if not session_state:
-        failure = RedirectResponse(url="/login", status_code=302)
-        _merge_set_cookie(temp_response, failure)
-        return failure
-
     try:
-        complete_response = await auth_client.complete_connect_account(
+        await auth_client.complete_connect_account(
             str(request.url),
             store_options=_store_options(request, temp_response),
         )
-    except Exception as exc:  # noqa: BLE001
-        logging.exception("Connect account completion failed: %s", exc)
-        request.session["connected_account_status"] = False
-        messages = list(request.session.get("chat_messages", []))
-        messages.append(
-            {
-                "sender": "system",
-                "message": "Connected account flow failed. Please retry.",
-            }
+        request.session["connected_account_status"] = True
+        
+        # Now fetch the federated tokens for DynamoDB
+        primary_token = request.session.get("access_token")
+        tokens_payload, _ = await fetch_federated_tokens(request, access_token=primary_token)
+        federated_entries = tokens_payload.get("federated_tokens") or []
+        federated_token_value = None
+        if isinstance(federated_entries, list) and federated_entries:
+            first_entry = federated_entries[0]
+            if isinstance(first_entry, dict):
+                federated_token_value = first_entry.get("token")
+        print('federated_token_value',federated_token_value)
+        # Persist everything to DynamoDB
+        store_session_data(
+            session_id=request.session["session_id"],
+            refresh_token=request.session.get("refresh_token"),
+            federated_token=federated_token_value,
+            connection_name=AUTH0_CONNECTION_NAME,
+            user_data=request.session["profile"],
+            access_token=primary_token,
+            connected_accounts=tokens_payload.get("connected_accounts")
         )
-        request.session["chat_messages"] = messages
-        failure = RedirectResponse(url="/chat", status_code=302)
-        _merge_set_cookie(temp_response, failure)
-        return failure
 
-    request.session["connected_account_status"] = True
-    request.session["connected_account_details"] = complete_response.model_dump()
-    messages = list(request.session.get("chat_messages", []))
-    messages.append(
-        {
-            "sender": "system",
-            "message": "Connected account linked successfully.",
-        }
-    )
-    request.session["chat_messages"] = messages
-
+    except Exception as exc:
+        logging.exception("Connect callback failed: %s", exc)
+        request.session["connected_account_status"] = False
+  
     outgoing = RedirectResponse(url="/chat", status_code=302)
     _merge_set_cookie(temp_response, outgoing)
     return outgoing
-
 
 @app.api_route("/chat", methods=["GET", "POST"])
 @requires_auth
@@ -807,4 +705,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("app:app", host="0.0.0.0", port=5000, reload=True)
-

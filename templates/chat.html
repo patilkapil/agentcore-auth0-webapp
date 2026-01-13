@@ -154,6 +154,11 @@
             color: #fed7d7;
             border: 1px solid rgba(229, 62, 62, 0.6);
         }
+        .status-pill.connecting {
+            background: rgba(251, 191, 36, 0.2);
+            color: #fefcbf;
+            border: 1px solid rgba(214, 158, 46, 0.6);
+        }
         .clear-btn {
             background: rgba(255, 255, 255, 0.15);
             color: white;
@@ -395,6 +400,23 @@
             transform: translateY(-1px);
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
         }
+        .info-banner {
+            margin: 0 24px 16px;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .info-banner.connecting {
+            background: rgba(251, 191, 36, 0.15);
+            border: 1px solid rgba(214, 158, 46, 0.4);
+            color: #613514;
+        }
+        .info-banner.error {
+            background: rgba(229, 62, 62, 0.15);
+            border: 1px solid rgba(229, 62, 62, 0.4);
+            color: #742a2a;
+        }
     </style>
 </head>
 <body>
@@ -407,10 +429,16 @@
                 <img src="{{ user.picture }}" alt="User">
                 {% endif %}
                 <span class="user-name">{{ user.name }}</span>
-                <span class="status-pill {{ 'connected' if connected_status else 'disconnected' }}">
-                    {{ 'Connected' if connected_status else 'Not Connected' }}
+                {% set status_class = 'connected' if connected_status else ('connecting' if auto_connect_in_progress else 'disconnected') %}
+                {% set status_text = 'Connected' if connected_status else ('Connecting...' if auto_connect_in_progress else 'Not Connected') %}
+                <span class="status-pill {{ status_class }}">
+                    {{ status_text }}
                 </span>
-                <a href="{{ connect_account_url }}" class="connect-btn">Connect Account</a>
+                {% if not connected_status and not auto_connect_in_progress %}
+                <a href="{{ connect_account_url }}" class="connect-btn">
+                    {{ 'Retry Connect' if connect_error else 'Connect Account' }}
+                </a>
+                {% endif %}
                 <a href="/logout" class="logout-btn">Logout</a>
                 {% if messages %}
                 <form method="POST" action="/clear-chat" style="display: inline;">
@@ -419,6 +447,15 @@
                 {% endif %}
             </div>
         </div>
+        {% if auto_connect_in_progress %}
+        <div class="info-banner connecting">
+            We're finishing your account link. Complete the Auth0 prompt to continue.
+        </div>
+        {% elif connect_error %}
+        <div class="info-banner error">
+            Connected account setup failed: {{ connect_error }}. Use "Retry Connect" to try again.
+        </div>
+        {% endif %}
 
         <div id="chat-box">
             {% if not messages %}
