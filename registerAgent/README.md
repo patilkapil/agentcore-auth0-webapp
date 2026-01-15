@@ -1,12 +1,15 @@
 # Register Agent
 
-This folder holds the configuration and entrypoint code for the Auth0-enabled AgentCore deployment. Use it as the working directory when preparing your `.env`, running the agent locally, or launching it to AWS via the Bedrock AgentCore toolkit.
+This folder holds the Register Agent assets and deployment helpers. The documentation below only covers files that live directly in `registerAgent/` 
 
 ## Key Files
 
-- `agentCore_Auth0/agentcore_agent.py` — Main agent entrypoint. Loads managed secrets (Auth0, OpenFGA, Okta), exposes tools such as `invokeCiba` (password reset via CIBA) and `getOktaGroups`, and wires the Bedrock model with MCP-provided remote tools.
-- `agentCore_Auth0/agentcore_deployment.py` — Deployment helper that uses the Bedrock AgentCore starter toolkit to package and launch the agent. Requires AWS credentials plus Auth0 configuration provided through environment variables.
+- `agentcore_agent.py` — Agent entrypoint script used for registration flows.
+- `agentcore_deployment.py` — Deployment helper for launching the agent runtime.
 - `env.sample` — Template for the `.env` file expected when running deployment scripts locally. Copy to `.env` and replace placeholders with real values.
+- `requirements.txt` — Python dependencies needed for the register agent tooling.
+- `Dockerfile` — Container image definition for packaging the register agent runtime.
+- `README.md` — This documentation file.
 
 ## Prerequisites
 

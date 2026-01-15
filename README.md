@@ -8,6 +8,8 @@ FastAPI application that authenticates users with Auth0, links downstream accoun
 - Connect-account experience for retrieving federated provider tokens
 - DynamoDB-backed session store for AgentCore invocations
 - AgentCore runtime invocation via AWS Bedrock REST API
+## Architecture Flow 
+
 
 ## Requirements
 
