@@ -1,6 +1,6 @@
 # AgentCore Auth0 Web App
 
-FastAPI application that authenticates users with Auth0, links downstream accounts, and invokes AWS Bedrock AgentCore for chat-style interactions. The main application lives in `app.py` and expects configuration via a `.env` copied from `env.template`.
+FastAPI application that authenticates users with Auth0, links downstream accounts, and invokes AWS Bedrock AgentCore for chat-style interactions. The main application lives in `app.py` and expects configuration via a `.env`.
 
 ## Features
 
@@ -8,8 +8,23 @@ FastAPI application that authenticates users with Auth0, links downstream accoun
 - Connect-account experience for retrieving federated provider tokens
 - DynamoDB-backed session store for AgentCore invocations
 - AgentCore runtime invocation via AWS Bedrock REST API
-## Architecture Flow 
 
+
+## Architecture Flow 
+<img width="1428" height="724" alt="image" src="https://github.com/user-attachments/assets/9c551444-46e9-4f7c-879e-2e4d0d1e0de1" />
+
+1. User Authentication: A user logs into the GenAI web application via the Auth0 Sign-In Widget. The application receives an access token, which it includes in the request to invoke the AI agent.
+
+2. Agent Invocation & Runtime: The Strands Agent receives the request within the AgentCore Run Time. It manages the conversation context and selects the appropriate tools based on the user's intent.
+
+3. Inbound Identity Validation: The AgentCore Identity component validates the incoming access token against Auth0. This step ensures that only authenticated users can trigger the agent.
+
+4. Advanced Security Controls: The agent leverages Auth0 for AI Agents to manage complex security requirements:
+    * Fine-Grained Authorization (FGA): The agent checks specific authorization policies to verify if the user has the exact permissions required for the requested action.
+    * Async Authorization: For high-stakes or "elevated" actions, the system triggers a Human-in-the-Loop flow. The agent pauses execution until a human operator approves the request via an asynchronous authentication flow.
+    * Token Vault: The agent retrieves user-delegated OAuth tokens from a secure vault. This allows the agent to act on the user's behalf when calling third-party services without exposing raw credentials.
+
+5. Secure External Interaction: When the agent needs to fetch data or perform actions, it communicates through the AgentCore Gateway. The gateway ensures that only requests backed by a valid Auth0 identity can reach External APIs or MCP Servers.
 
 ## Requirements
 
