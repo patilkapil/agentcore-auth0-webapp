@@ -86,10 +86,12 @@ REFRESH_TOKEN_CACHE: Dict[str, str] = {}
 
 
 def _store_options(request: Request, response: Response) -> Dict[str, Any]:
+    """Translate FastAPI request/response into the structure expected by auth0_fastapi."""
     return {"request": request, "response": response}
 
 
 def _merge_set_cookie(source: Response, target: Response) -> None:
+    """Copy Set-Cookie headers from the Auth0 helper onto the outgoing response."""
     if not source or not target:
         return
     for cookie in source.headers.getlist("set-cookie"):
@@ -97,6 +99,7 @@ def _merge_set_cookie(source: Response, target: Response) -> None:
 
 
 async def _fetch_auth0_session(request: Request, response: Response) -> Optional[Dict[str, Any]]:
+    """Retrieve the Auth0 session stored in cookies and store it in the session with cached refresh token."""
     try:
         session_state = await auth_client.client.get_session(
             store_options=_store_options(request, response)
@@ -124,17 +127,8 @@ def _select_refresh_token(state_data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-'''def _user_request(method: str, path: str, token: str, payload: Optional[Dict[str, Any]] = None) -> Any:
-    base_url = MYACCOUNT_BASE_URL if path.startswith("/me/") else AUTH0_BASE_URL
-    url = f"{base_url}{path}"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    response = requests.request(method, url, json=payload, headers=headers, timeout=20)
-    response.raise_for_status()
-    return response.json()
-'''
-
-
 async def fetch_federated_tokens(request: Request, access_token: Optional[str] = None) -> Tuple[Dict[str, Any], Response]:
+    """Load linked accounts and exchange for provider-specific tokens."""
     state_response = Response()
     
     # 1. Get token from session if not provided
@@ -189,6 +183,7 @@ async def fetch_federated_tokens(request: Request, access_token: Optional[str] =
     }, state_response
 
 def requires_auth(handler):
+    """Guard routes that require an authenticated profile in the session."""
     @wraps(handler)
     async def wrapped(request: Request, *args, **kwargs):
         if not request.session.get("profile"):
@@ -198,35 +193,8 @@ def requires_auth(handler):
     return wrapped
 
 
-'''def get_bearer_token():
-    try:
-        auth0_domain = AUTH0_DOMAIN
-        client_id = AUTH0_CLIENT_ID
-        client_secret = AUTH0_CLIENT_SECRET
-        audience = AUTH0_AUDIENCE
-        scope = os.getenv("AUTH0_SCOPE", "invoke:gateway read:gateway")
-
-        if not all([auth0_domain, client_id, client_secret, audience]):
-            raise ValueError("Missing required Auth0 environment variables")
-
-        get_token = GetToken(auth0_domain, client_id, client_secret=client_secret)
-        token_response = get_token.client_credentials(audience=audience)
-        access_token = token_response.get("access_token")
-
-        if not access_token:
-            raise ValueError("No access token received from Auth0")
-
-        return access_token
-
-    except Exception as exc:  # noqa: BLE001
-        logging.error("Error getting Auth0 token: %s", exc)
-        fallback_token = os.getenv("BEARER_TOKEN")
-        if fallback_token:
-            return fallback_token
-        raise
-'''
-
 async def get_tokenset(request: Request) -> Tuple[Dict[str, Any], Response]:
+    """Convenience wrapper used by the token vault API."""
     return await fetch_federated_tokens(request)
 
 
@@ -239,6 +207,7 @@ def store_session_data(
     access_token: Optional[str] = None,
     connected_accounts: Optional[Any] = None,
 ) -> None:
+    """Persist the consolidated session payload for later agent invocations."""
     if not SESSION_TABLE_NAME:
         logging.debug("DynamoDB session table not configured; skipping persistence.")
         return
@@ -262,16 +231,11 @@ def store_session_data(
 
         if refresh_token:
             item["refresh_token"] = refresh_token
-        #if federated_token:
-            #item["federated_token"] = federated_token
         if access_token:
             item["access_token"] = access_token
-        #if connected_accounts:
-            #item["connected_accounts"] = json.dumps(connected_accounts)
 
         table.put_item(Item=item)
         logging.debug("Stored session data for session_id: %s", session_id)
-        print('session_id in store_session_data',session_id)
 
     except Exception as exc:  # noqa: BLE001
         logging.error("Error storing session data: %s", exc)
@@ -279,6 +243,7 @@ def store_session_data(
 
 
 def get_session_data(session_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch the stored session blob for the chat workflow."""
     if not SESSION_TABLE_NAME:
         logging.debug("DynamoDB session table not configured; skipping lookup.")
         return None
@@ -298,6 +263,7 @@ def get_session_data(session_id: str) -> Optional[Dict[str, Any]]:
 
 @app.get("/")
 async def index(request: Request):
+    """Render login screen or redirect to chat when already authenticated."""
     if request.session.get("profile"):
         return RedirectResponse(url="/chat", status_code=302)
     return templates.TemplateResponse(
@@ -311,6 +277,7 @@ async def index(request: Request):
 
 @app.get("/login")
 async def login(request: Request):
+    """Start interactive Auth0 login and reset any stale session state."""
     request.session.clear()
     temp_response = Response()
     try:
@@ -330,6 +297,7 @@ async def login(request: Request):
 
 @app.get("/auth/callback")
 async def callback(request: Request):
+    """Handle Auth0 login callback and kick off connect-account flow when needed."""
     response = Response()
     # Check if this is a secondary redirect from the Connect Account flow
     if "connect_code" in request.query_params:
@@ -349,7 +317,6 @@ async def callback(request: Request):
     state_data = result.get("state_data") or {}
     token_sets = state_data.get("token_sets") or []
     primary_token = token_sets[0].get("access_token") if token_sets else None
-    
     # Store essential data in session immediately
     userinfo = state_data.get("user") or {}
     request.session["profile"] = {
@@ -401,6 +368,7 @@ async def logout(request: Request):
 @app.get("/connect-account/start")
 @requires_auth
 async def connect_account_start(request: Request):
+    """Begin the Auth0 connect-account flow using the primary session profile."""
     temp_response = Response()
     
     # Get profile from session (populated in /auth/callback)
@@ -424,7 +392,6 @@ async def connect_account_start(request: Request):
         return RedirectResponse(url="/chat", status_code=302)
 
     outgoing = RedirectResponse(url=connect_url, status_code=302)
-    print('outgoing',outgoing)
     _merge_set_cookie(temp_response, outgoing)
     return outgoing
 
@@ -432,6 +399,7 @@ async def connect_account_start(request: Request):
 @app.get("/connect-account/callback")
 @requires_auth
 async def connect_account_callback(request: Request):
+    """Complete the connect-account flow and persist newly acquired tokens."""
     temp_response = Response()
     try:
         await auth_client.complete_connect_account(
@@ -449,7 +417,6 @@ async def connect_account_callback(request: Request):
             first_entry = federated_entries[0]
             if isinstance(first_entry, dict):
                 federated_token_value = first_entry.get("token")
-        print('federated_token_value',federated_token_value)
         # Persist everything to DynamoDB
         store_session_data(
             session_id=request.session["session_id"],
@@ -472,6 +439,7 @@ async def connect_account_callback(request: Request):
 @app.api_route("/chat", methods=["GET", "POST"])
 @requires_auth
 async def chat_page(request: Request):
+    """Render or post chat messages while proxying invocations to AgentCore."""
     session_store = request.session
     messages = list(session_store.get("chat_messages", []))
 
@@ -524,7 +492,6 @@ async def chat_page(request: Request):
 
                 #bearer_token = get_bearer_token() 
                 bearer_token = session_store.get("access_token")
-                print('bearer_token in chat_page',bearer_token)
                 agent_runtime_arn_encoded = urllib.parse.quote(AGENT_RUNTIME_ARN, safe="")
                 
                 invoke_agent_arn=os.getenv("AGENT_RUNTIME_ARN")
@@ -532,12 +499,6 @@ async def chat_page(request: Request):
 
                 escaped_agent_arn = urllib.parse.quote(invoke_agent_arn, safe='')
                 url = f"https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/{escaped_agent_arn}/invocations?qualifier=DEFAULT"
-                #(
-                #    "https://bedrock-agentcore.us-east-1.amazonaws.com/"
-                #    f"runtimes/{agent_runtime_arn_encoded}/invocations?qualifier=DEFAULT"
-                #)
-
-                
 
                 headers = {
                     "Authorization": f"Bearer {bearer_token}",
@@ -546,7 +507,6 @@ async def chat_page(request: Request):
                     .get("profile", {})
                     .get("user_id", "default-session"),
                 }
-                print('session_idsession_idsession_idsession_id',session_id)
                 response = requests.post(
                     url,
                     headers=headers,
